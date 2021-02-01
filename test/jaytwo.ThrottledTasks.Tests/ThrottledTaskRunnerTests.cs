@@ -17,7 +17,7 @@ namespace jaytwo.ThrottledTasks.Tests
         [InlineData(10000, 10)]
         [InlineData(100000, 100)]
         [InlineData(1000000, 1000)]
-        public async Task ThrottledTaskRunnerRunsAllTasks(int iterations, int maxConcurrentTasks)
+        public async Task ThrottledTaskRunnerRunsAllTasksWithAsyncEnumerableInput(int iterations, int maxConcurrentTasks)
         {
             // arrange
             int counter = 0;
@@ -30,7 +30,7 @@ namespace jaytwo.ThrottledTasks.Tests
                 }));
 
             // act
-            await ThrottledTaskRunner.RunInParallelAsync(enumerableTasks, maxConcurrentTasks);
+            await ThrottledTaskRunner.RunInParallelAsync(enumerableTasks.ToAsyncEnumerable(), maxConcurrentTasks);
 
             // assert
             Assert.Equal(iterations, counter);
@@ -103,9 +103,40 @@ namespace jaytwo.ThrottledTasks.Tests
 
             // act && assert
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ThrottledTaskRunner.RunInParallelAsync(enumerableTasks, maxConcurrentTasks));
-            Assert.Equal(unluckyNumber, taskCounter);
+
+            // depending on when it happens, the taskCounter excecuted might be within one or two of the unlucky number
+            Assert.True(unluckyNumber < taskCounter + 2);
+            Assert.True(unluckyNumber > taskCounter - 2);
             Assert.True(taskCounter < iteratorCounter);
             Assert.True(iteratorCounter < desiredIterations);
+        }
+
+        [Theory]
+        [InlineData(1, 1)]
+        [InlineData(100, 10)]
+        [InlineData(1000, 100)]
+        [InlineData(10000, 100)]
+        public async Task ThrottledTaskRunnerRunInParallelWorksForIAsyncEnumerableWithAsyncEnumerableInput(int desiredIterations, int maxConcurrentTasks)
+        {
+            // arrange
+            var random = new Random();
+            var range = Enumerable.Range(0, desiredIterations).ToList();
+            var enumerableTasks = range.Select(i => new Func<Task<int>>(async () =>
+            {
+                await Task.Delay(random.Next(1, 3));
+                return i;
+            }));
+
+            // act
+            var results = await ThrottledTaskRunner.GetResultsInParallelAsync(enumerableTasks.ToAsyncEnumerable(), maxConcurrentTasks).ToListAsync();
+
+            // assert
+            Assert.Equal(desiredIterations, results.Distinct().Count());
+
+            if (desiredIterations > 1)
+            {
+                Assert.NotEqual(range, results);
+            }
         }
 
         [Theory]

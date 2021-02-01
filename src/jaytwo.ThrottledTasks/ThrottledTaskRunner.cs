@@ -23,7 +23,24 @@ namespace jaytwo.ThrottledTasks
         }
 
 #if NETSTANDARD2_0 || NETSTANDARD2_1
-        public static async IAsyncEnumerable<T> GetResultsInParallelAsync<T>(IEnumerable<Func<Task<T>>> taskDelegates, int maxConcurrentTasks)
+
+        public static async Task RunInParallelAsync(IAsyncEnumerable<Func<Task>> taskDelegates, int maxConcurrentTasks)
+        {
+            using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
+            {
+                await foreach (var taskDelegate in taskDelegates)
+                {
+                    await throttledTaskQueue.QueueAsync(taskDelegate);
+                }
+
+                await throttledTaskQueue.WaitToFinishAsync();
+            }
+        }
+
+        public static IAsyncEnumerable<T> GetResultsInParallelAsync<T>(IEnumerable<Func<Task<T>>> taskDelegates, int maxConcurrentTasks)
+            => GetResultsInParallelAsync(taskDelegates.ToAsyncEnumerable(), maxConcurrentTasks);
+
+        public static async IAsyncEnumerable<T> GetResultsInParallelAsync<T>(IAsyncEnumerable<Func<Task<T>>> taskDelegates, int maxConcurrentTasks)
         {
             var results = new Queue<T>(maxConcurrentTasks);
             int runningTaskCount = 0;
@@ -31,7 +48,7 @@ namespace jaytwo.ThrottledTasks
             using (var resultsSemaphore = new SemaphoreSlim(1))
             using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
             {
-                foreach (var taskDelegate in taskDelegates)
+                await foreach (var taskDelegate in taskDelegates)
                 {
                     await foreach (var resultItem in SafeDequeueEverythingAsync(resultsSemaphore, results))
                     {
