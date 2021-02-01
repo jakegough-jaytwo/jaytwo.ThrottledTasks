@@ -30,7 +30,7 @@ namespace jaytwo.ThrottledTasks.Tests
                 }));
 
             // act
-            await ThrottledTaskRunner.RunInParallel(enumerableTasks, maxConcurrentTasks);
+            await ThrottledTaskRunner.RunInParallelAsync(enumerableTasks, maxConcurrentTasks);
 
             // assert
             Assert.Equal(iterations, counter);
@@ -73,46 +73,95 @@ namespace jaytwo.ThrottledTasks.Tests
 
             // act && assert
             // only a single exception here so it's the original InvalidOperationException
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ThrottledTaskRunner.RunInParallel(enumerableTasks, maxConcurrentTasks));
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ThrottledTaskRunner.RunInParallelAsync(enumerableTasks, maxConcurrentTasks));
             Assert.NotEqual(iterations, counter);
         }
 
         [Theory]
         [InlineData(100, 1)]
         [InlineData(1000, 100)]
-        public async Task ThrottledTaskRunnerDoesStopsProcessingOnExceptions(int desiredIterations, int maxConcurrentTasks)
+        [InlineData(10000, 100)]
+        public async Task ThrottledTaskRunnerStopsProcessingOnExceptions(int desiredIterations, int maxConcurrentTasks)
         {
             // arrange
             var iteratorCounter = 0;
             int taskCounter = 0;
-            var semaphoreSlim = new SemaphoreSlim(1);
             var unluckyNumber = new Random().Next(0, desiredIterations / 2);
 
             var enumerableTasks = Enumerable.Range(0, desiredIterations)
                 .Select(x => new Func<Task>(async () =>
                 {
-                    iteratorCounter++;
-                    await semaphoreSlim.WaitAsync();
-                    try
+                    Interlocked.Increment(ref iteratorCounter);
+                    await Task.Delay(new Random().Next(1, 3));
+                    if (taskCounter >= unluckyNumber)
                     {
-                        await Task.Delay(new Random().Next(2, 10));
-                        if (taskCounter >= unluckyNumber)
-                        {
-                            throw new InvalidOperationException(Guid.NewGuid().ToString());
-                        }
+                        throw new InvalidOperationException(Guid.NewGuid().ToString());
+                    }
 
-                        taskCounter++;
-                    }
-                    finally
-                    {
-                        semaphoreSlim.Release();
-                    }
+                    Interlocked.Increment(ref taskCounter);
                 }));
 
             // act && assert
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ThrottledTaskRunner.RunInParallel(enumerableTasks, maxConcurrentTasks));
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ThrottledTaskRunner.RunInParallelAsync(enumerableTasks, maxConcurrentTasks));
             Assert.Equal(unluckyNumber, taskCounter);
             Assert.True(taskCounter < iteratorCounter);
+            Assert.True(iteratorCounter < desiredIterations);
+        }
+
+        [Theory]
+        [InlineData(1, 1)]
+        [InlineData(100, 10)]
+        [InlineData(1000, 100)]
+        [InlineData(10000, 100)]
+        public async Task ThrottledTaskRunnerRunInParallelWorksForIAsyncEnumerable(int desiredIterations, int maxConcurrentTasks)
+        {
+            // arrange
+            var random = new Random();
+            var range = Enumerable.Range(0, desiredIterations).ToList();
+            var enumerableTasks = range.Select(i => new Func<Task<int>>(async () =>
+            {
+                await Task.Delay(random.Next(1, 3));
+                return i;
+            }));
+
+            // act
+            var results = await ThrottledTaskRunner.GetResultsInParallelAsync(enumerableTasks, maxConcurrentTasks).ToListAsync();
+
+            // assert
+            Assert.Equal(desiredIterations, results.Distinct().Count());
+
+            if (desiredIterations > 1)
+            {
+                Assert.NotEqual(range, results);
+            }
+        }
+
+        [Theory]
+        [InlineData(100, 5)]
+        [InlineData(10000, 100)]
+        [InlineData(100000, 1000)]
+        public async Task ThrottledTaskRunnerRunInParallelForIAsyncEnumerableStopsOnException(int desiredIterations, int maxConcurrentTasks)
+        {
+            // arrange
+            int iteratorCounter = 0;
+            var unluckyNumber = new Random().Next(0, desiredIterations / 2);
+
+            var random = new Random();
+            var range = Enumerable.Range(0, desiredIterations).ToList();
+            var enumerableTasks = range.Select(i => new Func<Task<int>>(async () =>
+            {
+                if (i == unluckyNumber)
+                {
+                    throw new InvalidOperationException();
+                }
+
+                Interlocked.Increment(ref iteratorCounter);
+                await Task.Delay(random.Next(1, 3));
+                return i;
+            }));
+
+            // act & assert
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () => await ThrottledTaskRunner.GetResultsInParallelAsync(enumerableTasks, maxConcurrentTasks).ToListAsync());
             Assert.True(iteratorCounter < desiredIterations);
         }
     }

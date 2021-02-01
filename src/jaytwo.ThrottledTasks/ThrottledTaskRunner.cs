@@ -9,69 +9,99 @@ namespace jaytwo.ThrottledTasks
 {
     public static class ThrottledTaskRunner
     {
-        public static async Task RunInParallel(IEnumerable<Func<Task>> taskDelegates, int maxConcurrentTasks)
+        public static async Task RunInParallelAsync(IEnumerable<Func<Task>> taskDelegates, int maxConcurrentTasks)
         {
-            var runningTasks = new List<Task>(maxConcurrentTasks);
-
-            using (var taskCollectionSemaphore = new SemaphoreSlim(1)) // only one thread at a time is manipulating the runningTasks collection
-            using (var enumerableAdvancementSemaphore = new SemaphoreSlim(maxConcurrentTasks))
+            using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
             {
                 foreach (var taskDelegate in taskDelegates)
                 {
-                    await enumerableAdvancementSemaphore.WaitAsync();  // gets released only after the task delegate from the iterator has been completed
-                    await taskCollectionSemaphore.WaitAsync();         // gets released as soon as the task has been added to the running tasks collection
-                    try
-                    {
-                        // Continually groom the runningTasks list to support infinite/unbounded IEnumerable's without invinitely growing the task list
-                        RemoveTasksRanToCompletion(runningTasks);
-                        await VerifyNoFailedTasks(runningTasks);
-
-                        runningTasks.Add(Task.Run(async () =>
-                        {
-                            // The magic: we awaited the semaphore outside the task, but then we wrap the original task delegate
-                            //   in another task that includes releasing the semaphore only after the task completes.
-                            // This way, we don't start any tasks unless the semaphore is under its limit.
-
-                            try
-                            {
-                                await taskDelegate();
-                            }
-                            finally
-                            {
-                                enumerableAdvancementSemaphore.Release();
-                            }
-                        }));
-                    }
-                    finally
-                    {
-                        taskCollectionSemaphore.Release();
-                    }
+                    await throttledTaskQueue.QueueAsync(taskDelegate);
                 }
 
-                await Task.WhenAll(runningTasks);
+                await throttledTaskQueue.WaitToFinishAsync();
             }
         }
 
-        private static void RemoveTasksRanToCompletion(List<Task> runningTasks)
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+        public static async IAsyncEnumerable<T> GetResultsInParallelAsync<T>(IEnumerable<Func<Task<T>>> taskDelegates, int maxConcurrentTasks)
         {
-            var doneTasks = runningTasks
-                .Where(x => x.Status == TaskStatus.RanToCompletion)
-                .ToList();
+            var results = new Queue<T>(maxConcurrentTasks);
+            int runningTaskCount = 0;
 
-            foreach (var doneTask in doneTasks)
+            using (var resultsSemaphore = new SemaphoreSlim(1))
+            using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
             {
-                runningTasks.Remove(doneTask);
+                foreach (var taskDelegate in taskDelegates)
+                {
+                    await foreach (var resultItem in SafeDequeueEverythingAsync(resultsSemaphore, results))
+                    {
+                        yield return resultItem;
+                    }
+
+                    await throttledTaskQueue.QueueAsync(async () =>
+                    {
+                        Interlocked.Increment(ref runningTaskCount);
+                        try
+                        {
+                            var resultItem = await taskDelegate();
+                            await SafeEnqueueItemAsync(resultsSemaphore, results, resultItem);
+                        }
+                        finally
+                        {
+                            Interlocked.Decrement(ref runningTaskCount);
+                        }
+                    });
+                }
+
+                // try to agressively return items that are finishing after our queue loop
+                while (runningTaskCount > 0)
+                {
+                    await foreach (var resultItem in SafeDequeueEverythingAsync(resultsSemaphore, results))
+                    {
+                        yield return resultItem;
+                    }
+
+                    await Task.Delay(2);
+                }
+
+                // to throw any exceptions and return items that may aren't caught by checking runningTaskCount
+                await throttledTaskQueue.WaitToFinishAsync();
+                await foreach (var resultItem in SafeDequeueEverythingAsync(resultsSemaphore, results))
+                {
+                    yield return resultItem;
+                }
             }
         }
 
-        private static async Task VerifyNoFailedTasks(List<Task> runningTasks)
+        private static async Task SafeEnqueueItemAsync<T>(SemaphoreSlim resultsSemaphore, Queue<T> results, T resultItem)
         {
-            if (runningTasks.Any(x => x.IsFaulted || x.IsCanceled))
+            await resultsSemaphore.WaitAsync();
+            try
             {
-                // TODO: the awaited task here will just throw the first exception, even if there are many (which should be in an AggregateException)
-                //       see: https://stackoverflow.com/questions/12007781/why-doesnt-await-on-task-whenall-throw-an-aggregateexception
-                await Task.WhenAll(runningTasks);
+                results.Enqueue(resultItem);
+            }
+            finally
+            {
+                resultsSemaphore.Release();
             }
         }
+
+        private static async IAsyncEnumerable<T> SafeDequeueEverythingAsync<T>(SemaphoreSlim resultsSemaphore, Queue<T> results)
+        {
+            await resultsSemaphore.WaitAsync();
+            try
+            {
+                while (results.Count > 0)
+                {
+                    yield return results.Dequeue();
+                }
+            }
+            finally
+            {
+                resultsSemaphore.Release();
+            }
+        }
+#endif
+
     }
 }
