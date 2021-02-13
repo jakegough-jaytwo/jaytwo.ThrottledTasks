@@ -105,10 +105,8 @@ namespace jaytwo.ThrottledTasks.Tests
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ThrottledTaskRunner.RunInParallelAsync(enumerableTasks, maxConcurrentTasks));
 
             // depending on when it happens, the taskCounter excecuted might be within one or two of the unlucky number
-            Assert.True(unluckyNumber < taskCounter + 2);
-            Assert.True(unluckyNumber > taskCounter - 2);
-            Assert.True(taskCounter < iteratorCounter);
-            Assert.True(iteratorCounter < desiredIterations);
+            Assert.InRange(unluckyNumber, taskCounter - 2, taskCounter + 2);
+            Assert.InRange(iteratorCounter, taskCounter, desiredIterations);
         }
 
         [Theory]
