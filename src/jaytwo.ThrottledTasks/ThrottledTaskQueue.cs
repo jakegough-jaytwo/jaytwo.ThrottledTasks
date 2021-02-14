@@ -24,6 +24,19 @@ namespace jaytwo.ThrottledTasks
 
         public int MaxConcurrentTasks { get; }
 
+        public async Task QueueAsync(Action taskDelegate)
+        {
+            await QueueAsync(() =>
+            {
+                taskDelegate();
+#if NET45
+                return Task.FromResult(0);
+#else
+                return Task.CompletedTask;
+#endif
+            });
+        }
+
         public async Task QueueAsync(Func<Task> taskDelegate)
         {
             await _enumerableAdvancementSemaphore.WaitAsync();  // gets released only after the task delegate from the iterator has been completed
