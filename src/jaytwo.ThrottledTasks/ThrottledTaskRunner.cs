@@ -9,6 +9,13 @@ namespace jaytwo.ThrottledTasks
 {
     public static class ThrottledTaskRunner
     {
+        public static async Task RunInParallelAsync<T>(IEnumerable<T> input, Func<T, Task> action, int maxConcurrentTasks)
+        {
+            var taskDelegates = input.Select<T, Func<Task>>(x => async () => await action(x));
+
+            await RunInParallelAsync(taskDelegates, maxConcurrentTasks);
+        }
+
         public static async Task RunInParallelAsync(IEnumerable<Func<Task>> taskDelegates, int maxConcurrentTasks)
         {
             using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
@@ -24,6 +31,32 @@ namespace jaytwo.ThrottledTasks
 
 #if NETSTANDARD2_0 || NETSTANDARD2_1
 
+        public static async Task RunInParallelAsync<T>(IAsyncEnumerable<T> input, Func<T, Task> action, int maxConcurrentTasks)
+        {
+            using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
+            {
+                await foreach (var inputItem in input)
+                {
+                    await throttledTaskQueue.QueueAsync(async () => await action(inputItem));
+                }
+
+                await throttledTaskQueue.WaitToFinishAsync();
+            }
+        }
+
+        public static async Task RunInParallelAsync<T>(IAsyncEnumerable<T> input, Action<T> action, int maxConcurrentTasks)
+        {
+            using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
+            {
+                await foreach (var inputItem in input)
+                {
+                    await throttledTaskQueue.QueueAsync(() => action(inputItem));
+                }
+
+                await throttledTaskQueue.WaitToFinishAsync();
+            }
+        }
+
         public static async Task RunInParallelAsync(IAsyncEnumerable<Func<Task>> taskDelegates, int maxConcurrentTasks)
         {
             using (var throttledTaskQueue = new ThrottledTaskQueue(maxConcurrentTasks))
@@ -37,8 +70,20 @@ namespace jaytwo.ThrottledTasks
             }
         }
 
+        public static IAsyncEnumerable<TOut> GetResultsInParallelAsync<TIn, TOut>(IEnumerable<TIn> input, Func<TIn, Task<TOut>> action, int maxConcurrentTasks)
+            => GetResultsInParallelAsync(input.ToAsyncEnumerable(), action, maxConcurrentTasks);
+
+        public static IAsyncEnumerable<TOut> GetResultsInParallelAsync<TIn, TOut>(IAsyncEnumerable<TIn> input, Func<TIn, Task<TOut>> action, int maxConcurrentTasks)
+            => GetResultsInParallelAsync(input.Select<TIn, Func<Task<TOut>>>(x => async () => await action(x)), maxConcurrentTasks);
+
+        public static IAsyncEnumerable<TOut> GetResultsInParallelAsync<TIn, TOut>(IAsyncEnumerable<TIn> input, Func<TIn, TOut> action, int maxConcurrentTasks)
+            => GetResultsInParallelAsync(input.Select<TIn, Func<TOut>>(x => () => action(x)), maxConcurrentTasks);
+
         public static IAsyncEnumerable<T> GetResultsInParallelAsync<T>(IEnumerable<Func<Task<T>>> taskDelegates, int maxConcurrentTasks)
             => GetResultsInParallelAsync(taskDelegates.ToAsyncEnumerable(), maxConcurrentTasks);
+
+        public static IAsyncEnumerable<T> GetResultsInParallelAsync<T>(IAsyncEnumerable<Func<T>> taskDelegates, int maxConcurrentTasks)
+            => GetResultsInParallelAsync(taskDelegates.Select<Func<T>, Func<Task<T>>>(x => () => Task.FromResult(x())), maxConcurrentTasks);
 
         public static async IAsyncEnumerable<T> GetResultsInParallelAsync<T>(IAsyncEnumerable<Func<Task<T>>> taskDelegates, int maxConcurrentTasks)
         {

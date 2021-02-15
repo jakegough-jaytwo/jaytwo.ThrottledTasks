@@ -17,6 +17,30 @@ namespace jaytwo.ThrottledTasks
                 yield return await Task.FromResult(item);
             }
         }
+
+        public static async IAsyncEnumerable<TOut> Select<TIn, TOut>(this IEnumerable<TIn> enumerable, Func<TIn, Task<TOut>> action)
+        {
+            foreach (var item in enumerable)
+            {
+                yield return await action(item);
+            }
+        }
+
+        public static async IAsyncEnumerable<TOut> Select<TIn, TOut>(this IAsyncEnumerable<TIn> enumerable, Func<TIn, TOut> action)
+        {
+            await foreach (var item in enumerable)
+            {
+                yield return action(item);
+            }
+        }
+
+        public static async IAsyncEnumerable<TOut> Select<TIn, TOut>(this IAsyncEnumerable<TIn> enumerable, Func<TIn, Task<TOut>> action)
+        {
+            await foreach (var item in enumerable)
+            {
+                yield return await action(item);
+            }
+        }
     }
 }
 
